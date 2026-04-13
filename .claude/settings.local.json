@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -u hmm_model.py)",
+      "Bash(echo \"EXIT_CODE: $?\")",
+      "Bash(powershell -Command \"cd 'C:\\\\Users\\\\90553\\\\Documents\\\\GitHub\\\\YAP-441---Predicting-BIST-100-With-Hidden-Markov-Model-'; python hmm_model.py 2>&1 | Out-File -FilePath 'output.txt' -Encoding utf8\")",
+      "Bash(ls /c/Users/90553/AppData/Local/Programs/Python/)",
+      "Bash(ls /c/Users/90553/AppData/Local/Microsoft/WindowsApps/python*)",
+      "Bash(which python3:*)"
+    ]
+  }
+}

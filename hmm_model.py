@@ -20,6 +20,7 @@ import numpy as np
 from hmmlearn.hmm import GaussianHMM
 from sklearn.metrics import (accuracy_score, precision_score,
                              recall_score, f1_score, confusion_matrix)
+from sklearn.preprocessing import MinMaxScaler
 import warnings
 import os
 
@@ -27,7 +28,7 @@ warnings.filterwarnings("ignore")
 
 # ── Ayarlar ────────────────────────────────────────────────────────────────────
 
-DATA_PATH  = "data/bist100_normalized.csv"
+DATA_PATH  = "data/bist100_raw.csv"
 RAW_PATH   = "data/bist100_raw.csv"
 OUTPUT_DIR = "data"
 
@@ -41,19 +42,15 @@ N_STATES_LIST = [2, 3, 4]
 # Her N için kaç farklı başlangıç noktası denensin
 N_INIT = 20
 
-# Modele verilecek özellikler (teknik + makro — raporda taahhüt edilen)
+# Modele verilecek özellikler — 8 özellik (aşırı parametre sorununu önler)
+# Ham seviye değerleri (usdtry, brent, sp500, dax) kaldırıldı: değişim oranları
+# daha bilgilendirici. Yüksek korelasyonlu göstergeler (sma_20, sma_50, ema_20,
+# bb_upper, bb_mid, bb_lower) kaldırıldı: bb_width zaten volatiliteyi özetliyor.
 FEATURE_COLS = [
     # Teknik göstergeler
-    "rsi",
-    "macd", "macd_signal", "macd_hist",
-    "sma_20", "sma_50", "ema_20",
-    "bb_upper", "bb_mid", "bb_lower", "bb_width",
-    "volume_norm",
-    # Makroekonomik değişkenler
-    "usdtry", "usdtry_chg",
-    "brent",  "brent_chg",
-    "sp500",  "sp500_chg",
-    "dax",    "dax_chg",
+    "rsi", "macd", "bb_width", "volume_norm",
+    # Makroekonomik değişkenler (değişim oranları — seviye değil)
+    "usdtry_chg", "brent_chg", "sp500_chg", "dax_chg",
 ]
 
 
@@ -63,9 +60,9 @@ FEATURE_COLS = [
 
 def load_and_split():
     """
-    Normalize edilmiş veriyi yükler, eğitim/test olarak böler.
-    Normalizasyon data_collection.py'de tüm veriye uygulandı;
-    burada sadece bölüyoruz.
+    Ham veriyi yükler, önce eğitim/test olarak böler, ardından normalize eder.
+    MinMaxScaler yalnızca eğitim setine fit edilir; test setine sadece transform
+    uygulanır — bu sayede test verisi normalizasyona sızmaz (data leakage önlenir).
     """
     print("📂 Veri yükleniyor...")
 
@@ -82,6 +79,12 @@ def load_and_split():
     y_train = train["target"].values
     X_test  = test[FEATURE_COLS].values
     y_test  = test["target"].values
+
+    # Normalizasyon sızıntısını önle: scaler SADECE eğitim setine fit edilir,
+    # test setine yalnızca transform uygulanır.
+    scaler = MinMaxScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test  = scaler.transform(X_test)
 
     print(f"   ✓ Eğitim : {len(train)} hafta  ({train.index[0].date()} → {train.index[-1].date()})")
     print(f"   ✓ Test   : {len(test)}  hafta  ({test.index[0].date()} → {test.index[-1].date()})")
@@ -106,8 +109,8 @@ def train_hmm(X_train, n_states, n_init=N_INIT):
     for seed in range(n_init):
         model = GaussianHMM(
             n_components=n_states,
-            covariance_type="full",   # tam kovaryans matrisi
-            n_iter=200,               # maksimum EM iterasyonu
+            covariance_type="diag",   # köşegen kovaryans: d parametre/durum (full=d*(d+1)/2)
+            n_iter=500,               # maksimum EM iterasyonu (yakınsama için artırıldı)
             tol=1e-4,                 # yakınsama toleransı
             random_state=seed,
         )
@@ -144,9 +147,9 @@ def select_best_n(X_train, n_states_list=N_STATES_LIST):
             continue
 
         # Parametre sayısı: geçiş matrisi + emisyon parametreleri
-        # full covariance: n*(n-1) geçiş + n*d ortalama + n*d*(d+1)/2 kovaryans
+        # diag covariance: n*(n-1) geçiş + n*d ortalama + n*d kovaryans (köşegen)
         d = n_features
-        k_params = (n * (n - 1)) + (n * d) + (n * d * (d + 1) // 2)
+        k_params = (n * (n - 1)) + (n * d) + (n * d)
 
         bic = -2 * log_likelihood + k_params * np.log(n_samples)
         aic = -2 * log_likelihood + 2 * k_params
