@@ -32,24 +32,14 @@ DATA_PATH  = "data/bist100_raw.csv"
 RAW_PATH   = "data/bist100_raw.csv"
 OUTPUT_DIR = "data"
 
-# Raporda belirlenen eğitim/test bölümü
 TRAIN_END  = "2021-12-31"
 TEST_START = "2022-01-01"
 
-# HMM denenecek gizli durum sayıları
 N_STATES_LIST = [2, 3, 4]
+N_INIT        = 20
 
-# Her N için kaç farklı başlangıç noktası denensin
-N_INIT = 20
-
-# Modele verilecek özellikler — 8 özellik (aşırı parametre sorununu önler)
-# Ham seviye değerleri (usdtry, brent, sp500, dax) kaldırıldı: değişim oranları
-# daha bilgilendirici. Yüksek korelasyonlu göstergeler (sma_20, sma_50, ema_20,
-# bb_upper, bb_mid, bb_lower) kaldırıldı: bb_width zaten volatiliteyi özetliyor.
 FEATURE_COLS = [
-    # Teknik göstergeler
     "rsi", "macd", "bb_width", "volume_norm",
-    # Makroekonomik değişkenler (değişim oranları — seviye değil)
     "usdtry_chg", "brent_chg", "sp500_chg", "dax_chg",
 ]
 
@@ -60,17 +50,15 @@ FEATURE_COLS = [
 
 def load_and_split():
     """
-    Ham veriyi yükler, önce eğitim/test olarak böler, ardından normalize eder.
-    MinMaxScaler yalnızca eğitim setine fit edilir; test setine sadece transform
-    uygulanır — bu sayede test verisi normalizasyona sızmaz (data leakage önlenir).
+    Ham veriyi yükler, eğitim/test olarak böler.
+    MinMaxScaler yalnızca eğitim setine fit edilir — data leakage önlenir.
     """
     print("📂 Veri yükleniyor...")
 
     df = pd.read_csv(DATA_PATH, index_col=0, parse_dates=True)
 
-    # Sadece kullanacağımız özellikler + hedef
     cols = FEATURE_COLS + ["target"]
-    df = df[cols].dropna()
+    df   = df[cols].dropna()
 
     train = df[df.index <= TRAIN_END]
     test  = df[df.index >= TEST_START]
@@ -80,9 +68,7 @@ def load_and_split():
     X_test  = test[FEATURE_COLS].values
     y_test  = test["target"].values
 
-    # Normalizasyon sızıntısını önle: scaler SADECE eğitim setine fit edilir,
-    # test setine yalnızca transform uygulanır.
-    scaler = MinMaxScaler()
+    scaler  = MinMaxScaler()
     X_train = scaler.fit_transform(X_train)
     X_test  = scaler.transform(X_test)
 
@@ -94,29 +80,28 @@ def load_and_split():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ADIM 2 — HMM Eğitimi (Baum-Welch, çoklu başlangıç)
+# ADIM 2 — HMM Eğitimi
 # ══════════════════════════════════════════════════════════════════════════════
 
 def train_hmm(X_train, n_states, n_init=N_INIT):
     """
-    Verilen gizli durum sayısı için GaussianHMM eğitir.
-    Baum-Welch (EM) algoritması hmmlearn tarafından otomatik kullanılır.
-    Farklı random_state'lerle n_init kez dener, en yüksek log-likelihood'u seçer.
+    GaussianHMM eğitir. Baum-Welch (EM) hmmlearn tarafından otomatik kullanılır.
+    n_init farklı random_state ile en yüksek log-likelihood'u seçer.
     """
-    best_model  = None
-    best_score  = -np.inf
+    best_model = None
+    best_score = -np.inf
 
     for seed in range(n_init):
         model = GaussianHMM(
             n_components=n_states,
-            covariance_type="diag",   # köşegen kovaryans: d parametre/durum (full=d*(d+1)/2)
-            n_iter=500,               # maksimum EM iterasyonu (yakınsama için artırıldı)
-            tol=1e-4,                 # yakınsama toleransı
+            covariance_type="diag",
+            n_iter=500,
+            tol=1e-4,
             random_state=seed,
         )
         try:
             model.fit(X_train)
-            score = model.score(X_train)   # log-likelihood
+            score = model.score(X_train)
             if score > best_score:
                 best_score = score
                 best_model = model
@@ -128,10 +113,8 @@ def train_hmm(X_train, n_states, n_init=N_INIT):
 
 def select_best_n(X_train, n_states_list=N_STATES_LIST):
     """
-    N=2, 3, 4 için modelleri eğitir.
-    BIC ve AIC hesaplayarak en iyi N'i seçer.
-    BIC = -2*logL + k*ln(n)   (k = parametre sayısı)
-    AIC = -2*logL + 2*k
+    N=2,3,4 için BIC/AIC hesaplar, en düşük BIC'li modeli seçer.
+    diag covariance parametre sayısı: n*(n-1) + n*d + n*d
     """
     print("\n🔍 Gizli durum sayısı optimizasyonu (N=2,3,4)...")
     print(f"   Her N için {N_INIT} farklı başlangıç noktası deneniyor...\n")
@@ -146,13 +129,10 @@ def select_best_n(X_train, n_states_list=N_STATES_LIST):
             print(f"   N={n} → eğitim başarısız")
             continue
 
-        # Parametre sayısı: geçiş matrisi + emisyon parametreleri
-        # diag covariance: n*(n-1) geçiş + n*d ortalama + n*d kovaryans (köşegen)
-        d = n_features
+        d        = n_features
         k_params = (n * (n - 1)) + (n * d) + (n * d)
-
-        bic = -2 * log_likelihood + k_params * np.log(n_samples)
-        aic = -2 * log_likelihood + 2 * k_params
+        bic      = -2 * log_likelihood + k_params * np.log(n_samples)
+        aic      = -2 * log_likelihood + 2 * k_params
 
         results.append({
             "n_states"       : n,
@@ -162,9 +142,8 @@ def select_best_n(X_train, n_states_list=N_STATES_LIST):
             "model"          : model,
         })
 
-        print(f"   N={n} | LogL: {log_likelihood:>12.2f} | BIC: {bic:>12.2f} | AIC: {aic:>12.2f}")
+        print(f"   N={n} | LogL: {log_likelihood:>10.2f} | BIC: {bic:>12.2f} | AIC: {aic:>12.2f}")
 
-    # En düşük BIC = en iyi model
     best = min(results, key=lambda x: x["bic"])
     print(f"\n   ✅ Seçilen model: N={best['n_states']} (en düşük BIC)")
 
@@ -172,90 +151,97 @@ def select_best_n(X_train, n_states_list=N_STATES_LIST):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ADIM 3 — Gizli Durumları Yorumla (Viterbi)
+# ADIM 3 — Durum → Artış Oranı Eşlemesi (Viterbi)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def interpret_states(model, X_train, y_train, n_states):
+def learn_state_up_rates(model, X_train, y_train, n_states):
     """
-    Viterbi algoritmasıyla eğitim verisindeki gizli durum dizisini çıkarır.
-    Her durumun ortalama hedef etiketine bakarak rejim yorumu yapar:
-      - Ortalaması yüksek durum → "Boğa" (artış ağırlıklı)
-      - Ortalaması düşük durum  → "Ayı"  (düşüş ağırlıklı)
-      - Ortası                  → "Yatay"
+    Viterbi ile eğitim verisindeki gizli durum dizisini çıkarır.
+    Her durum için gerçek artış oranını hesaplar.
+
+    Eşik (threshold): tüm durumların artış oranı ortalaması.
+    Bir durumun artış oranı eşiğin üzerindeyse → bullish (tahmin=1)
+    Altındaysa → bearish (tahmin=0).
+    Bu sayede mutlak %50 yerine göreceli karşılaştırma yapılır;
+    piyasanın genel eğiliminden daha iyi durumlara 1, kötü olanlara 0 denir.
     """
     hidden_states = model.predict(X_train)   # Viterbi
 
-    state_info = {}
+    state_up_rate = {}
     for s in range(n_states):
-        mask = hidden_states == s
-        avg_return = y_train[mask].mean() if mask.sum() > 0 else 0.5
-        state_info[s] = {
-            "avg_target" : round(avg_return, 3),
-            "count"      : int(mask.sum()),
-        }
+        mask    = hidden_states == s
+        count   = mask.sum()
+        up_rate = y_train[mask].mean() if count > 0 else 0.5
+        state_up_rate[s] = up_rate
 
-    # Durumları artış ortalamasına göre sırala → rejim ismi ver
-    sorted_states = sorted(state_info.items(), key=lambda x: x[1]["avg_target"])
-    regime_names  = ["Ayı (Düşüş)", "Yatay", "Boğa (Yükseliş)"]
+    # Eşik: durumların ağırlıklı ortalaması (hafta sayısına göre)
+    total = len(hidden_states)
+    threshold = sum(
+        rate * (hidden_states == s).sum() / total
+        for s, rate in state_up_rate.items()
+    )
+
+    # Artış oranına göre sırala, rejim ismi ver
+    sorted_states = sorted(state_up_rate.items(), key=lambda x: x[1])
+    if n_states == 2:
+        regime_names = ["Ayı (Düşüş)", "Boğa (Yükseliş)"]
+    elif n_states == 3:
+        regime_names = ["Ayı (Düşüş)", "Yatay", "Boğa (Yükseliş)"]
+    else:
+        regime_names = [f"Rejim {i+1}" for i in range(n_states)]
 
     print(f"\n📊 Gizli Durum Yorumu (Viterbi — eğitim verisi):")
-    for rank, (state_id, info) in enumerate(sorted_states):
-        regime = regime_names[rank] if n_states == 3 else (
-            "Ayı" if rank == 0 else "Boğa"
-        )
-        print(f"   Durum {state_id}: {regime:<20} | "
-              f"Artış oranı: %{info['avg_target']*100:.1f} | "
-              f"Hafta sayısı: {info['count']}")
+    print(f"   Dinamik eşik (threshold): %{threshold*100:.1f}")
+    for rank, (s, rate) in enumerate(sorted_states):
+        regime  = regime_names[rank] if rank < len(regime_names) else f"Durum {s}"
+        count   = int((hidden_states == s).sum())
+        sinyal  = "↑ Artış" if rate >= threshold else "↓ Düşüş"
+        print(f"   Durum {s}: {regime:<22} | "
+              f"Artış oranı: %{rate*100:.1f} | "
+              f"Hafta: {count:>3} | Sinyal: {sinyal}")
 
-    # Hangi durum → artış (1), hangi durum → düşüş (0)
-    # En yüksek avg_target'lı durum(lar) → tahmin=1
-    sorted_by_return = sorted(state_info.items(),
-                               key=lambda x: x[1]["avg_target"], reverse=True)
-    bullish_states = {s for s, _ in sorted_by_return[:n_states//2 + n_states%2]}
-
-    return hidden_states, bullish_states, state_info
+    return state_up_rate, threshold
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ADIM 4 — Walk-Forward Backtesting
 # ══════════════════════════════════════════════════════════════════════════════
 
-def walk_forward_backtest(model, X_train, bullish_states, X_test, y_test):
+def walk_forward_backtest(model, X_train, state_up_rate, threshold, X_test, y_test):
     """
-    Walk-forward backtesting:
-    Her adımda model X_train + o ana kadarki test verisini görür,
-    bir sonraki haftayı tahmin eder.
-    Bu yöntem data leakage'ı önler — model geleceği görmez.
+    Walk-forward backtesting.
+    Tahmin mekanizması:
+      1. Viterbi ile mevcut gizli durumu bul
+      2. O durumun eğitimde ölçülen artış oranını al
+      3. Artış oranı >= threshold → tahmin=1, değilse → tahmin=0
+    Threshold sabit %50 değil; eğitim verisinin genel artış oranı
+    kullanılır. Böylece tüm durumlar %50 üzerinde olsa bile
+    görece zayıf olanlar düşüş sinyali verir.
     """
     print("\n⏱️  Walk-forward backtesting çalışıyor...")
 
-    predictions = []
+    predictions   = []
     probabilities = []
-
-    X_so_far = X_train.copy()
+    X_so_far      = X_train.copy()
 
     for i in range(len(X_test)):
-        # Mevcut tüm veriyle durum dizisini çıkar
-        hidden = model.predict(X_so_far)
-        current_state = hidden[-1]   # en son durum
+        hidden        = model.predict(X_so_far)   # Viterbi
+        current_state = hidden[-1]
 
-        # Geçiş olasılıklarına göre bir sonraki durum tahmini
-        next_state_probs = model.transmat_[current_state]
-
-        # Boğa durumlarının toplam olasılığı = artış ihtimali
-        bull_prob = sum(next_state_probs[s] for s in bullish_states)
-
-        pred = 1 if bull_prob >= 0.5 else 0
+        up_prob = state_up_rate.get(current_state, threshold)
+        pred    = 1 if up_prob >= threshold else 0
         predictions.append(pred)
-        probabilities.append(round(bull_prob, 4))
+        probabilities.append(round(up_prob, 4))
 
-        # Bir sonraki adım için bu haftanın verisini ekle
         X_so_far = np.vstack([X_so_far, X_test[i]])
 
-    predictions  = np.array(predictions)
+    predictions   = np.array(predictions)
     probabilities = np.array(probabilities)
 
     print(f"   ✓ {len(predictions)} haftalık tahmin tamamlandı")
+    print(f"   Artış tahmini : {predictions.sum()} hafta")
+    print(f"   Düşüş tahmini : {(predictions==0).sum()} hafta")
+
     return predictions, probabilities
 
 
@@ -265,9 +251,7 @@ def walk_forward_backtest(model, X_train, bullish_states, X_test, y_test):
 
 def evaluate(y_test, predictions, probabilities, test_df):
     """
-    Raporda taahhüt edilen tüm metrikler:
-    Accuracy, Precision, Recall, F1, Confusion Matrix
-    + Baseline karşılaştırmaları
+    Accuracy, Precision, Recall, F1, Confusion Matrix + baseline karşılaştırması.
     """
     acc  = accuracy_score(y_test, predictions)
     prec = precision_score(y_test, predictions, zero_division=0)
@@ -288,12 +272,11 @@ def evaluate(y_test, predictions, probabilities, test_df):
     print(f"  Gerçek:Düşüş     {cm[0][0]:>5}          {cm[0][1]:>5}")
     print(f"  Gerçek:Artış     {cm[1][0]:>5}          {cm[1][1]:>5}")
 
-    # ── Baseline 1: Rastgele Tahmin ──────────────────────────────────────────
+    # Baseline 1: rastgele
     np.random.seed(42)
-    random_preds = np.random.randint(0, 2, len(y_test))
-    random_acc   = accuracy_score(y_test, random_preds)
+    random_acc = accuracy_score(y_test, np.random.randint(0, 2, len(y_test)))
 
-    # ── Baseline 2: Her Zaman Artış Tahmin Et ────────────────────────────────
+    # Baseline 2: her zaman artış
     always_up_acc = y_test.mean()
 
     print()
@@ -307,16 +290,14 @@ def evaluate(y_test, predictions, probabilities, test_df):
     else:
         print(f"\n  ⚠️  Henüz hedefe ulaşılamadı (fark: %{(0.60-acc)*100:.2f})")
 
-    # ── Baseline 3: Buy-and-Hold Karşılaştırması ─────────────────────────────
-    raw = pd.read_csv(RAW_PATH, index_col=0, parse_dates=True)
+    # Baseline 3: buy-and-hold vs strateji
+    raw      = pd.read_csv(RAW_PATH, index_col=0, parse_dates=True)
     raw_test = raw[raw.index >= TEST_START]["close"]
 
     if len(raw_test) > 1:
-        bh_return = (raw_test.iloc[-1] / raw_test.iloc[0] - 1) * 100
-
-        # Sinyal tabanlı strateji: artış tahmini varsa tut, düşüş tahmini varsa çık
-        weekly_returns = raw_test.pct_change().dropna().values
-        min_len = min(len(predictions), len(weekly_returns))
+        bh_return       = (raw_test.iloc[-1] / raw_test.iloc[0] - 1) * 100
+        weekly_returns  = raw_test.pct_change().dropna().values
+        min_len         = min(len(predictions), len(weekly_returns))
         strategy_return = (weekly_returns[:min_len] * predictions[:min_len]).sum() * 100
 
         print()
@@ -327,12 +308,11 @@ def evaluate(y_test, predictions, probabilities, test_df):
 
     print("═"*60)
 
-    # Sonuçları kaydet
     result_df = pd.DataFrame({
-        "tarih"     : test_df.index[:len(predictions)],
-        "gercek"    : y_test[:len(predictions)],
-        "tahmin"    : predictions,
-        "artis_olasiligi": probabilities,
+        "tarih"           : test_df.index[:len(predictions)],
+        "gercek"          : y_test[:len(predictions)],
+        "tahmin"          : predictions,
+        "artis_olasiligi" : probabilities,
     })
     result_df.to_csv(os.path.join(OUTPUT_DIR, "backtest_results.csv"), index=False)
     print(f"\n  ✅ Backtest sonuçları → data/backtest_results.csv")
@@ -349,23 +329,16 @@ def main():
     print("  BIST-100 YÖN TAHMİNİ — HMM MODELİ")
     print("═"*60)
 
-    # 1. Veri yükle ve böl
     X_train, y_train, X_test, y_test, train_df, test_df = load_and_split()
 
-    # 2. N=2,3,4 için modelleri eğit, BIC ile en iyisini seç
     best_model, best_n, all_results = select_best_n(X_train)
 
-    # 3. Gizli durumları Viterbi ile yorumla
-    hidden_states, bullish_states, state_info = interpret_states(
-        best_model, X_train, y_train, best_n
-    )
+    state_up_rate, threshold = learn_state_up_rates(best_model, X_train, y_train, best_n)
 
-    # 4. Walk-forward backtesting
     predictions, probabilities = walk_forward_backtest(
-        best_model, X_train, bullish_states, X_test, y_test
+        best_model, X_train, state_up_rate, threshold, X_test, y_test
     )
 
-    # 5. Performans değerlendirmesi
     evaluate(y_test, predictions, probabilities, test_df)
 
 
