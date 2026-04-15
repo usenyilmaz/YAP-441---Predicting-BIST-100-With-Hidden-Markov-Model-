@@ -166,7 +166,7 @@ def _add_tcmb_data(macro: pd.DataFrame) -> pd.DataFrame:
     API anahtarın yoksa mock veri ile devam eder (geliştirme aşaması için).
     """
 
-    TCMB_API_KEY = "BURAYA_API_ANAHTARINI_GIR"  # ← evds2.tcmb.gov.tr'den al
+    TCMB_API_KEY = "3ZcaSKRLwm"  # ← evds2.tcmb.gov.tr'den al
 
     # Seri kodları
     # TP.TG2.Y01 = TCMB politika faiz oranı (gecelik)
