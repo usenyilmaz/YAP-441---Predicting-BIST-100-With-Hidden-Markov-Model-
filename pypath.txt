@@ -1,3 +1,0 @@
-bash: py: command not found
-bash: python3: command not found
-bash: ls: command not found
